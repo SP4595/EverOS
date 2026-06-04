@@ -27,12 +27,15 @@ Usage:
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import re
 import statistics
+import string
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,6 +60,113 @@ def _progress(iterable, *, desc: str, total: int, quiet: bool):
     if not quiet or _tqdm is None:
         return iterable
     return _tqdm(iterable, desc=desc, total=total, unit="item", dynamic_ncols=True)
+
+
+_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+
+
+def _one_line(text: str, limit: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _normalize_answer(text: str) -> str:
+    normalized = (text or "").lower().translate(_PUNCT_TABLE)
+    normalized = re.sub(r"\b(a|an|the)\b", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _answer_tokens(text: str) -> list[str]:
+    normalized = _normalize_answer(text)
+    return normalized.split() if normalized else []
+
+
+def _f1_score(prediction: str, reference: str) -> float:
+    pred_tokens = _answer_tokens(prediction)
+    ref_tokens = _answer_tokens(reference)
+    if not pred_tokens and not ref_tokens:
+        return 1.0
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+
+    overlap = sum((Counter(pred_tokens) & Counter(ref_tokens)).values())
+    if overlap == 0:
+        return 0.0
+
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(ref_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def _bleu1_score(prediction: str, reference: str) -> float:
+    pred_tokens = _answer_tokens(prediction)
+    ref_tokens = _answer_tokens(reference)
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+
+    overlap = sum((Counter(pred_tokens) & Counter(ref_tokens)).values())
+    precision = overlap / len(pred_tokens)
+    if precision == 0:
+        return 0.0
+
+    ref_len = len(ref_tokens)
+    pred_len = len(pred_tokens)
+    brevity_penalty = 1.0 if pred_len > ref_len else math.exp(1 - ref_len / pred_len)
+    return brevity_penalty * precision
+
+
+def _judge_score(judgments: list[bool]) -> float:
+    if not judgments:
+        return 0.0
+    return sum(1.0 for item in judgments if item) / len(judgments)
+
+
+def _augment_eval_result(result: dict) -> dict:
+    golden_answer = result.get("golden_answer", "") or ""
+    generated_answer = result.get("generated_answer", "") or ""
+    judgments = result.get("judgments", [])
+    return {
+        **result,
+        "f1_score": round(_f1_score(generated_answer, golden_answer), 4),
+        "bleu1_score": round(_bleu1_score(generated_answer, golden_answer), 4),
+        "judge_score": round(_judge_score(judgments), 4),
+    }
+
+
+def _print_per_qa_scores(eval_results: list[dict]) -> None:
+    if not eval_results:
+        return
+
+    print_section("Per-QA Scores")
+    running_f1 = 0.0
+    running_bleu1 = 0.0
+    running_judge = 0.0
+    ordered_results = sorted(eval_results, key=lambda item: item.get("index", 0))
+    total = len(ordered_results)
+
+    for position, result in enumerate(ordered_results, 1):
+        f1_score = result.get("f1_score", 0.0)
+        bleu1_score = result.get("bleu1_score", 0.0)
+        judge_score = result.get("judge_score", 0.0)
+        running_f1 += f1_score
+        running_bleu1 += bleu1_score
+        running_judge += judge_score
+
+        category = result.get("category")
+        category_label = CATEGORY_NAMES.get(category, "unknown")
+        print(
+            f"  QA {position}/{total} [{category_label}] "
+            f"f1={f1_score:.3f} bleu1={bleu1_score:.3f} judge={judge_score:.3f} | "
+            f"running[n={position} "
+            f"f1={running_f1 / position:.3f} "
+            f"bleu1={running_bleu1 / position:.3f} "
+            f"judge={running_judge / position:.3f}] | "
+            f"Q: {_one_line(result.get('question', ''))} | "
+            f"GT: {_one_line(result.get('golden_answer', ''))} | "
+            f"A: {_one_line(result.get('generated_answer', ''))}"
+        )
 
 
 # =============================================================================
@@ -450,8 +560,8 @@ def _parse_session_timestamp(ts_str: str) -> int:
 
 
 def load_conversation(
-    data_path: str, conv_index: int
-) -> tuple[list[dict], list[dict], str, str]:
+    data_path: str, conv_index: int | None = None, sample_id: str | None = None
+) -> tuple[list[dict], list[dict], str, str, int, str]:
     """Load a LoCoMo conversation, preserving session_N boundaries.
 
     Returns (sessions, qa_list, speaker_a, speaker_b) where `sessions` is
@@ -462,12 +572,33 @@ def load_conversation(
     with open(data_path, encoding="utf-8") as f:
         dataset = json.load(f)
 
+    if sample_id is not None:
+        resolved_sample_id = (
+            sample_id if sample_id.startswith("conv-") else f"conv-{sample_id}"
+        )
+        conv_index = next(
+            (
+                idx
+                for idx, item in enumerate(dataset)
+                if item.get("sample_id") == resolved_sample_id
+            ),
+            None,
+        )
+        if conv_index is None:
+            raise ValueError(
+                f"sample_id {resolved_sample_id} not found in dataset "
+                f"(available: {[item.get('sample_id') for item in dataset]})"
+            )
+    elif conv_index is None:
+        raise ValueError("either conv_index or sample_id must be provided")
+
     if conv_index >= len(dataset):
         raise ValueError(
             f"conv_index {conv_index} out of range (dataset has {len(dataset)} conversations)"
         )
 
     conv = dataset[conv_index]
+    resolved_sample_id = str(conv.get("sample_id") or f"conv-{conv_index}")
     conversation = conv["conversation"]
     speaker_a = conversation["speaker_a"]
     speaker_b = conversation["speaker_b"]
@@ -501,7 +632,7 @@ def load_conversation(
         session_idx += 1
 
     qa_list = [q for q in conv.get("qa", []) if q.get("category") != 5]
-    return sessions, qa_list, speaker_a, speaker_b
+    return sessions, qa_list, speaker_a, speaker_b, conv_index, resolved_sample_id
 
 
 # =============================================================================
@@ -514,7 +645,7 @@ def run_add_phase(
     sessions: list[dict],
     speaker_a: str,
     speaker_b: str,
-    conv_index: int,
+    conv_ref: int | str,
     batch_size: int,
     quiet: bool = False,
 ) -> dict[str, Any]:
@@ -530,14 +661,14 @@ def run_add_phase(
     total_batches = 0
 
     for sess in _progress(sessions, desc="Add+Flush", total=len(sessions), quiet=quiet):
-        session_id = f"locomo_conv{conv_index}_s{sess['session_idx']}"
+        session_id = f"locomo_conv{conv_ref}_s{sess['session_idx']}"
         api_messages: list[dict] = [
             {
                 # Append `_conv{N}` so the same speaker name across conversations
                 # (e.g. "John" appears in conv_2, conv_4, conv_6) does NOT collide
                 # on a shared owner_id partition. Without the suffix, repeated
                 # benchmark runs cross-pollute each other's memory store.
-                "sender_id": f"{msg['speaker'].lower()}_conv{conv_index}",
+                "sender_id": f"{msg['speaker'].lower()}_conv{conv_ref}",
                 "sender_name": msg["speaker"],
                 "role": "user",
                 "timestamp": msg["timestamp_ms"],
@@ -971,6 +1102,7 @@ def run_evaluate_phase(
     judge_runs: int = 1,
     quiet: bool = False,
     concurrency: int = 8,
+    qa_log: bool = False,
 ) -> list[dict]:
     """Evaluate answers using LLM judge (parallel)."""
     print_section(f"Evaluate Phase (judge_runs={judge_runs})")
@@ -998,6 +1130,10 @@ def run_evaluate_phase(
             results.append({"judgments": [], "is_correct": False})
         else:
             results.append(item)
+
+    results = [_augment_eval_result(r) for r in results]
+    if qa_log:
+        _print_per_qa_scores(results)
 
     correct_count = sum(1 for r in results if r["is_correct"])
     print(
@@ -1042,6 +1178,9 @@ def print_report(
     total = len(eval_results)
     correct = sum(1 for r in eval_results if r["is_correct"])
     search_errors = sum(1 for r in eval_results if r.get("search_error"))
+    total_f1 = sum(r.get("f1_score", 0.0) for r in eval_results)
+    total_bleu1 = sum(r.get("bleu1_score", 0.0) for r in eval_results)
+    total_judge = sum(r.get("judge_score", 0.0) for r in eval_results)
 
     cat_stats: dict[int, dict[str, int]] = {}
     for r in eval_results:
@@ -1049,10 +1188,19 @@ def print_report(
         if cat is None:
             continue
         if cat not in cat_stats:
-            cat_stats[cat] = {"correct": 0, "total": 0}
+            cat_stats[cat] = {
+                "correct": 0,
+                "total": 0,
+                "f1_sum": 0.0,
+                "bleu1_sum": 0.0,
+                "judge_sum": 0.0,
+            }
         cat_stats[cat]["total"] += 1
         if r["is_correct"]:
             cat_stats[cat]["correct"] += 1
+        cat_stats[cat]["f1_sum"] += r.get("f1_score", 0.0)
+        cat_stats[cat]["bleu1_sum"] += r.get("bleu1_score", 0.0)
+        cat_stats[cat]["judge_sum"] += r.get("judge_score", 0.0)
 
     search_times = [
         r["search_time_s"] for r in eval_results if not r.get("search_error")
@@ -1100,6 +1248,23 @@ def print_report(
     if search_errors:
         print(f"\nSEARCH ERRORS:         {search_errors}/{total}")
 
+    print("\nSCORES")
+    print(
+        f"  Overall:             "
+        f"f1={total_f1 / total if total else 0:.3f} | "
+        f"bleu1={total_bleu1 / total if total else 0:.3f} | "
+        f"judge={total_judge / total if total else 0:.3f}"
+    )
+    for cat in sorted(cat_stats.keys()):
+        s = cat_stats[cat]
+        label = CATEGORY_NAMES.get(cat, f"cat-{cat}")
+        print(
+            f"  Category {cat} ({label}): "
+            f"f1={s['f1_sum'] / s['total']:.3f} | "
+            f"bleu1={s['bleu1_sum'] / s['total']:.3f} | "
+            f"judge={s['judge_sum'] / s['total']:.3f}"
+        )
+
     print("\nACCURACY")
     print(f"  Overall:             {_pct(correct, total)} ({correct}/{total})")
     for cat in sorted(cat_stats.keys()):
@@ -1117,8 +1282,17 @@ def print_report(
         "correct": correct,
         "search_errors": search_errors,
         "accuracy": correct / total if total else 0,
+        "avg_f1": round(total_f1 / total, 4) if total else 0,
+        "avg_bleu1": round(total_bleu1 / total, 4) if total else 0,
+        "avg_judge": round(total_judge / total, 4) if total else 0,
         "category_stats": {
-            str(k): {"correct": v["correct"], "total": v["total"]}
+            str(k): {
+                "correct": v["correct"],
+                "total": v["total"],
+                "avg_f1": round(v["f1_sum"] / v["total"], 4),
+                "avg_bleu1": round(v["bleu1_sum"] / v["total"], 4),
+                "avg_judge": round(v["judge_sum"] / v["total"], 4),
+            }
             for k, v in cat_stats.items()
         },
         "avg_search_s": round(statistics.mean(search_times), 4) if search_times else 0,
@@ -1208,6 +1382,9 @@ def _compact_eval_result(r: dict) -> dict:
     entry = _compact_answer_result(r)
     entry["is_correct"] = r.get("is_correct", False)
     entry["judgments"] = r.get("judgments", [])
+    entry["f1_score"] = r.get("f1_score", 0)
+    entry["bleu1_score"] = r.get("bleu1_score", 0)
+    entry["judge_score"] = r.get("judge_score", 0)
     return entry
 
 
@@ -1287,10 +1464,21 @@ def parse_args() -> argparse.Namespace:
         "--base-url", default="http://localhost:8000", help="everos API base URL"
     )
     p.add_argument(
+        "--request-timeout",
+        type=int,
+        default=900,
+        help="Per-request timeout in seconds for everos API calls (default: 900)",
+    )
+    p.add_argument(
         "--data-path", default="data/locomo10.json", help="Path to LoCoMo dataset"
     )
     p.add_argument(
         "--conv-index", type=int, default=0, help="Conversation index in dataset"
+    )
+    p.add_argument(
+        "--sample-id",
+        default=None,
+        help="LoCoMo sample id such as conv-26 or 26; overrides --conv-index when set",
     )
     p.add_argument(
         "--methods",
@@ -1342,6 +1530,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--quiet", action="store_true", help="Suppress per-request verbose output"
+    )
+    p.add_argument(
+        "--qa-log",
+        action="store_true",
+        help="Print per-QA f1/bleu1/judge scores with running averages",
     )
     p.add_argument(
         "--concurrency",
@@ -1504,8 +1697,13 @@ def main():
 
     # 1. Load data (preserve LoCoMo session boundaries)
     print_section("Loading Data")
-    sessions, qa_list, spk_a, spk_b = load_conversation(args.data_path, args.conv_index)
-    conv_label = f"conv_{args.conv_index} ({spk_a} & {spk_b})"
+    sessions, qa_list, spk_a, spk_b, conv_index, sample_id = load_conversation(
+        args.data_path,
+        conv_index=args.conv_index,
+        sample_id=args.sample_id,
+    )
+    conv_ref = sample_id.removeprefix("conv-") if sample_id.startswith("conv-") else sample_id
+    conv_label = f"{sample_id} (dataset_idx={conv_index}, {spk_a} & {spk_b})"
     total_msgs = sum(len(s["messages"]) for s in sessions)
     print(
         f"  Conversation: {conv_label}\n"
@@ -1514,11 +1712,11 @@ def main():
     )
 
     # 2. Init client + pick search owner_id
-    client = EverosClient(base_url=args.base_url)
+    client = EverosClient(base_url=args.base_url, timeout=args.request_timeout)
     # Mirror the `_conv{N}` suffix used in run_add_phase so search hits the
     # right partition.
     _speaker = spk_a if args.eval_owner == "speaker_a" else spk_b
-    owner_id = f"{_speaker.lower()}_conv{args.conv_index}"
+    owner_id = f"{_speaker.lower()}_conv{conv_ref}"
     print(f"  Eval owner: {args.eval_owner} -> owner_id='{owner_id}'")
 
     # 3. Setup checkpoint dir
@@ -1526,7 +1724,7 @@ def main():
     if checkpoint_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         checkpoint_dir = os.path.join(
-            "benchmark_checkpoints", f"run_{ts}_conv{args.conv_index}"
+            "benchmark_checkpoints", f"run_{ts}_{sample_id.replace('-', '_')}"
         )
 
     # 4. Add phase
@@ -1537,7 +1735,7 @@ def main():
             sessions,
             spk_a,
             spk_b,
-            args.conv_index,
+            conv_ref,
             args.batch_size,
             quiet=args.quiet,
         )
@@ -1589,6 +1787,7 @@ def main():
             args.judge_runs,
             quiet=args.quiet,
             concurrency=args.concurrency,
+            qa_log=args.qa_log,
         )
         _save_checkpoint(checkpoint_dir, f"{method}_3_eval.json", "eval", eval_results)
 
@@ -1603,7 +1802,8 @@ def main():
     # 7. Optional JSON export
     if args.output:
         export = {
-            "conv_index": args.conv_index,
+            "conv_index": conv_index,
+            "sample_id": sample_id,
             "conv_label": conv_label,
             "eval_owner": args.eval_owner,
             "owner_id": owner_id,
@@ -1621,6 +1821,9 @@ def main():
                     "category": r["category"],
                     "is_correct": r["is_correct"],
                     "judgments": r["judgments"],
+                    "f1_score": r.get("f1_score", 0),
+                    "bleu1_score": r.get("bleu1_score", 0),
+                    "judge_score": r.get("judge_score", 0),
                     "search_time_s": r["search_time_s"],
                     "answer_time_s": r["answer_time_s"],
                     "episode_count": len(r.get("episodes", [])),

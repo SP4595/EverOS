@@ -1,0 +1,8 @@
+$28412b3e-6044-43b0-a5b5-a58234281867²Ê+
+created_at ÿÿÿÿÿÿÿÿÿ*timestamp:us:UTC8-
+updated_at ÿÿÿÿÿÿÿÿÿ*timestamp:us:UTC8id ÿÿÿÿÿÿÿÿÿ*string8!owner_id ÿÿÿÿÿÿÿÿÿ*string8#
+owner_type ÿÿÿÿÿÿÿÿÿ*string8app_id ÿÿÿÿÿÿÿÿÿ*string8#
+project_id ÿÿÿÿÿÿÿÿÿ*string8 summary ÿÿÿÿÿÿÿÿÿ*string8+explicit_info_json ÿÿÿÿÿÿÿÿÿ*string8-implicit_traits_json	 ÿÿÿÿÿÿÿÿÿ*string8,profile_timestamp_ms
+ ÿÿÿÿÿÿÿÿÿ*int648 md_path ÿÿÿÿÿÿÿÿÿ*string8'content_sha256 ÿÿÿÿÿÿÿÿÿ*string8"!
+lance.auto_cleanup.interval20"'
+lance.auto_cleanup.older_than14days

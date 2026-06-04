@@ -121,11 +121,13 @@ class LLMSettings(BaseModel):
         EVEROS_LLM__MODEL
         EVEROS_LLM__API_KEY
         EVEROS_LLM__BASE_URL
+        EVEROS_LLM__TIMEOUT_SECONDS
     """
 
     model: str = "gpt-4o-mini"
     api_key: SecretStr | None = None
     base_url: str | None = None
+    timeout_seconds: float = Field(default=60.0, gt=0)
 
 
 class MultimodalSettings(BaseModel):
