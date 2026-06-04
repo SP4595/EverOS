@@ -32,6 +32,11 @@ Install the project:
 uv sync
 ```
 
+If you are running LoCoMo locally against Ollama, see
+[docs/ollama_locomo_setup.md](docs/ollama_locomo_setup.md) for the
+recommended `~/.bashrc` exports, the `EVEROS_LLM__TIMEOUT_SECONDS=300`
+setting, and a ready-made `conv-26` wrapper script.
+
 ## 1. Prepare the dataset
 
 Place the LoCoMo file at `data/locomo10.json` (the dataset is
@@ -52,6 +57,12 @@ Leave the server running in one terminal; run the benchmark from
 another.
 
 ## 3. Run `hybrid`
+
+Single-sample Ollama run for `conv-26`:
+
+```bash
+bash tests/run_locomo_conv26_ollama.sh
+```
 
 Single conversation:
 

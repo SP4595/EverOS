@@ -89,6 +89,22 @@ The endpoint stack is OpenAI-protocol compatible (OpenAI / OpenRouter / vLLM /
 Ollama / DeepInfra …) — override `*__BASE_URL` in the generated `.env` to point
 at any of them.
 
+#### Ollama shell defaults
+
+If you run EverOS locally against Ollama, add these shell exports to `~/.bashrc`
+once and reload your shell:
+
+```bash
+export OLLAMA_HOST=0.0.0.0:11434
+export OLLAMA_KEEP_ALIVE=-1
+export OLLAMA_MAX_LOADED_MODELS=4
+export OLLAMA_NUM_PARALLEL=1
+export OLLAMA_CONTEXT_LENGTH=32768
+```
+
+Detailed setup notes, the recommended EverOS timeout setting, and a ready-made
+`conv-26` LoCoMo runner live in [docs/ollama_locomo_setup.md](docs/ollama_locomo_setup.md).
+
 #### Multi-modal (optional)
 
 To ingest non-text content (image / pdf / audio / office documents)
@@ -200,6 +216,7 @@ everos/                        # repo root
 - [docs/overview.md](docs/overview.md) — Project overview & vision
 - [docs/architecture.md](docs/architecture.md) — DDD layered architecture & dependency rules
 - [docs/engineering.md](docs/engineering.md) — Engineering & dev-efficiency infrastructure (CI / tooling / Claude Code)
+- [docs/ollama_locomo_setup.md](docs/ollama_locomo_setup.md) — Ollama shell config, EverOS timeout notes, and the conv-26 LoCoMo runner
 - [CHANGELOG.md](CHANGELOG.md) — Release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
 - [.claude/rules/](.claude/rules/) — Detailed coding conventions (auto-loaded by Claude Code)
