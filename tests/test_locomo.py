@@ -908,6 +908,7 @@ def _answer_one(
     speaker_b: str,
     llm_client: LLMClientPool,
     llm_model: str,
+    llm_timeout_seconds: int,
 ) -> dict:
     """Generate an answer for a single search result; safe to run in a thread.
 
@@ -917,7 +918,7 @@ def _answer_one(
     the truncation is deterministic, so retries bump temperature to break the
     same sampling path.
 
-    The openai ``timeout=300`` kwarg is a per-request socket deadline passed
+    The openai ``timeout=...`` kwarg is a per-request socket deadline passed
     directly to the underlying HTTP client, which is safe to use from a thread
     pool (no extra nesting needed).
     """
@@ -939,7 +940,7 @@ def _answer_one(
                 model=llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temp,
-                timeout=300,
+                timeout=llm_timeout_seconds,
             )
             raw_answer = r.choices[0].message.content or ""
         except Exception as e:
@@ -969,6 +970,7 @@ def run_answer_phase(
     speaker_b: str,
     llm_client: LLMClientPool,
     llm_model: str,
+    llm_timeout_seconds: int,
     quiet: bool = False,
     concurrency: int = 8,
 ) -> list[dict]:
@@ -983,6 +985,7 @@ def run_answer_phase(
             speaker_b=speaker_b,
             llm_client=llm_client,
             llm_model=llm_model,
+            llm_timeout_seconds=llm_timeout_seconds,
         )
 
     raw = _parallel_map(
@@ -1033,10 +1036,11 @@ def _judge_single(
     question: str,
     golden_answer: str,
     generated_answer: str,
+    llm_timeout_seconds: int,
 ) -> bool:
     """Judge a single answer. Returns True if CORRECT.
 
-    Uses ``timeout=300`` passed directly to the openai HTTP client so this
+    Uses ``timeout=...`` passed directly to the openai HTTP client so this
     function is safe to call from a thread pool without further nesting.
     """
     user_prompt = JUDGE_USER_PROMPT.format(
@@ -1052,7 +1056,7 @@ def _judge_single(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0,
-            timeout=300,
+            timeout=llm_timeout_seconds,
         )
         content = r.choices[0].message.content or ""
         json_str = _extract_json(content)
@@ -1072,6 +1076,7 @@ def _evaluate_one(
     llm_client: LLMClientPool,
     llm_model: str,
     judge_runs: int,
+    llm_timeout_seconds: int,
 ) -> dict:
     """Evaluate a single answer result with majority-vote judging.
 
@@ -1090,6 +1095,7 @@ def _evaluate_one(
                 ar["question"],
                 ar["golden_answer"],
                 ar["generated_answer"],
+                llm_timeout_seconds,
             )
         )
 
@@ -1102,6 +1108,7 @@ def run_evaluate_phase(
     llm_client: LLMClientPool,
     llm_model: str,
     judge_runs: int = 1,
+    llm_timeout_seconds: int = 900,
     quiet: bool = False,
     concurrency: int = 8,
     qa_log: bool = False,
@@ -1116,6 +1123,7 @@ def run_evaluate_phase(
             llm_client=llm_client,
             llm_model=llm_model,
             judge_runs=judge_runs,
+            llm_timeout_seconds=llm_timeout_seconds,
         )
 
     raw = _parallel_map(
@@ -1472,6 +1480,12 @@ def parse_args() -> argparse.Namespace:
         help="Per-request timeout in seconds for everos API calls (default: 900)",
     )
     p.add_argument(
+        "--llm-timeout",
+        type=int,
+        default=900,
+        help="Per-request timeout in seconds for Answer/Judge LLM calls (default: 900)",
+    )
+    p.add_argument(
         "--data-path", default="data/locomo10.json", help="Path to LoCoMo dataset"
     )
     p.add_argument(
@@ -1678,14 +1692,20 @@ def main():
         sys.exit(1)
 
     answer_client = LLMClientPool(
-        answer_api_keys, base_url=answer_base_url, timeout=60, max_retries=1
+        answer_api_keys,
+        base_url=answer_base_url,
+        timeout=args.llm_timeout,
+        max_retries=1,
     )
     # Reuse the same pool when endpoint + keys match (the common case).
     if answer_base_url == judge_base_url and answer_api_keys == judge_api_keys:
         judge_client = answer_client
     else:
         judge_client = LLMClientPool(
-            judge_api_keys, base_url=judge_base_url, timeout=60, max_retries=1
+            judge_api_keys,
+            base_url=judge_base_url,
+            timeout=args.llm_timeout,
+            max_retries=1,
         )
 
     print(
@@ -1696,6 +1716,7 @@ def main():
         f"  Judge  LLM: {judge_model} @ {judge_base_url}"
         f" ({judge_client.key_count} keys)"
     )
+    print(f"  LLM timeout: {args.llm_timeout}s")
 
     # 1. Load data (preserve LoCoMo session boundaries)
     print_section("Loading Data")
@@ -1775,6 +1796,7 @@ def main():
             spk_b,
             answer_client,
             answer_model,
+            args.llm_timeout,
             quiet=args.quiet,
             concurrency=args.concurrency,
         )
@@ -1787,6 +1809,7 @@ def main():
             judge_client,
             judge_model,
             args.judge_runs,
+            llm_timeout_seconds=args.llm_timeout,
             quiet=args.quiet,
             concurrency=args.concurrency,
             qa_log=args.qa_log,
