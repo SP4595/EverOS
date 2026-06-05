@@ -19,7 +19,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_load_settings_defaults_from_toml() -> None:
-    s = load_settings()
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     # Values straight out of config/default.toml
     assert s.memory.root == Path("~/.everos")
     assert s.memory.timezone == "UTC"
@@ -31,14 +31,17 @@ def test_load_settings_defaults_from_toml() -> None:
     assert s.sqlite.journal_size_limit_bytes == 64 * 1024 * 1024
     assert s.sqlite.cache_size_kb == 2048
     assert s.lancedb.read_consistency_seconds is None
+    assert s.llm.temperature == 0.0
 
 
 def test_env_overrides_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EVEROS_SQLITE__BUSY_TIMEOUT_MS", "10000")
     monkeypatch.setenv("EVEROS_SQLITE__JOURNAL_MODE", "DELETE")
+    monkeypatch.setenv("EVEROS_LLM__TEMPERATURE", "0.6")
     s = Settings()
     assert s.sqlite.busy_timeout_ms == 10000
     assert s.sqlite.journal_mode == "DELETE"
+    assert s.llm.temperature == 0.6
     # Untouched values stay at TOML defaults.
     assert s.sqlite.synchronous == "NORMAL"
 

@@ -56,9 +56,11 @@ cache_size_kb = 2048
 
 [llm]
 # Provider-agnostic OpenAI-protocol client config. Override via env:
-#   EVEROS_LLM__MODEL, EVEROS_LLM__API_KEY, EVEROS_LLM__BASE_URL
+#   EVEROS_LLM__MODEL, EVEROS_LLM__API_KEY, EVEROS_LLM__BASE_URL,
+#   EVEROS_LLM__TEMPERATURE
 # Or via a ``.env`` file next to the project root (auto-loaded).
 model = "gpt-4o-mini"
+temperature = 0.0
 # api_key = ""
 # base_url = ""
 

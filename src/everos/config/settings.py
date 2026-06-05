@@ -127,6 +127,7 @@ class LLMSettings(BaseModel):
     model: str = "gpt-4o-mini"
     api_key: SecretStr | None = None
     base_url: str | None = None
+    temperature: float = Field(default=0.0, ge=0)
     timeout_seconds: float = Field(default=60.0, gt=0)
 
 
