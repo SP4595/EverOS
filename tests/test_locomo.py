@@ -66,14 +66,16 @@ _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
 
 def _one_line(text: str, limit: int = 120) -> str:
-    compact = re.sub(r"\s+", " ", (text or "").strip())
+    value = "" if text is None else str(text)
+    compact = re.sub(r"\s+", " ", value.strip())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
 
 
 def _normalize_answer(text: str) -> str:
-    normalized = (text or "").lower().translate(_PUNCT_TABLE)
+    value = "" if text is None else str(text)
+    normalized = value.lower().translate(_PUNCT_TABLE)
     normalized = re.sub(r"\b(a|an|the)\b", " ", normalized)
     return " ".join(normalized.split())
 
