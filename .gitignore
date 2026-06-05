@@ -183,6 +183,8 @@ mongodb_backup/
 # Log directories
 logs/
 log/
+benchmark_results/
+benchmark_checkpoints/
 
 # Apollo config
 apollo_config/
