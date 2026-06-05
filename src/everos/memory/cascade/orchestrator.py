@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
 
 from everos.component.embedding import EmbeddingProvider
 from everos.component.tokenizer import Tokenizer
@@ -94,8 +95,21 @@ class CascadeOrchestrator:
         if orphans:
             logger.info("cascade_recovered_orphan_processing", count=orphans)
         loop = asyncio.get_running_loop()
-        self._watcher = CascadeWatcher(self._memory_root, loop)
-        self._watcher.start()
+        watcher = CascadeWatcher(self._memory_root, loop)
+        try:
+            watcher.start()
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+            logger.warning(
+                "cascade_watcher_disabled",
+                root=str(self._memory_root.root),
+                reason="inotify_watch_limit_reached",
+                error=str(exc),
+            )
+            self._watcher = None
+        else:
+            self._watcher = watcher
         await self._scanner.start()
         await self._worker.start()
         self._started = True

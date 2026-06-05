@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -86,6 +87,25 @@ async def test_double_stop_is_idempotent(runtime: MemoryRoot) -> None:
     await orch.start()
     await orch.stop()
     await orch.stop()  # second stop is a no-op
+
+
+async def test_start_degrades_when_inotify_limit_is_reached(
+    runtime: MemoryRoot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _make_orchestrator(runtime)
+
+    def _raise_enospc(*args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        raise OSError(errno.ENOSPC, "inotify watch limit reached")
+
+    monkeypatch.setattr("everos.memory.cascade.orchestrator.CascadeWatcher.start", _raise_enospc)
+
+    await orch.start()
+
+    assert orch._started is True
+    assert orch._watcher is None
+
+    await orch.stop()
 
 
 async def test_queue_summary_returns_empty_on_fresh_runtime(
