@@ -34,7 +34,7 @@ Note: on this machine the block already exists in `~/.bashrc`, so do not add a d
 Use Ollama's OpenAI-compatible endpoint for both chat and embeddings:
 
 ```bash
-EVEROS_LLM__MODEL=qwen3.6:35b
+EVEROS_LLM__MODEL=qwen3:30b-instruct
 EVEROS_LLM__API_KEY=ollama
 EVEROS_LLM__BASE_URL=http://127.0.0.1:11434/v1
 EVEROS_LLM__TIMEOUT_SECONDS=300
@@ -94,7 +94,7 @@ The wrapper in [tests/run_locomo_conv26_ollama.sh](../tests/run_locomo_conv26_ol
 - LoCoMo sample id `conv-26`
 - `hybrid` retrieval by default
 - per-QA logging with running `f1`, `bleu1`, and `judge`
-- answer + judge model = `qwen3.6:35b`
+- answer + judge model = `qwen3:30b-instruct`
 - benchmark HTTP request timeout = `900` seconds
 - corpus polling after flush using `--corpus-path`
 

@@ -52,7 +52,7 @@ if [[ -z "${LLM_MODEL:-}" || -z "${LLM_BASE_URL:-}" || -z "${LLM_API_KEY:-}" ]];
   fi
 fi
 
-LLM_MODEL="${LLM_MODEL:-qwen3.6:35b}"
+LLM_MODEL="${LLM_MODEL:-qwen3:30b-instruct}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://127.0.0.1:11434/v1}"
 LLM_API_KEY="${LLM_API_KEY:-ollama}"
 

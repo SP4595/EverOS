@@ -224,3 +224,9 @@ evaluation/locomo_evaluation/results_ref/demo/results/
 
 # Use-cases: exclude lock files to keep repo lean
 use-cases/**/package-lock.json
+
+
+
+.everos-loco/*
+.everos-local-conv26/*
+.everos-local-conv26-qwen30b/*
