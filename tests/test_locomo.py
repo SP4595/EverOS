@@ -382,6 +382,7 @@ class LLMClientPool:
     def __init__(self, api_keys: list[str], base_url: str, **kwargs: Any):
         if not api_keys:
             raise ValueError("LLMClientPool: at least one API key required")
+        self.base_url = base_url
         self._clients = [
             openai.OpenAI(api_key=k, base_url=base_url, **kwargs) for k in api_keys
         ]
@@ -425,6 +426,36 @@ class LLMClientPool:
         raise last_err
 
 
+def _is_ollama_base_url(base_url: str | None) -> bool:
+    lowered = (base_url or "").lower()
+    return "ollama" in lowered or "11434" in lowered
+
+
+def _build_chat_completion_kwargs(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    timeout: int,
+    max_tokens: int | None = None,
+    base_url: str | None = None,
+    ollama_repeat_penalty: float | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "timeout": timeout,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if ollama_repeat_penalty is not None and _is_ollama_base_url(base_url):
+        kwargs["extra_body"] = {
+            "options": {"repeat_penalty": ollama_repeat_penalty}
+        }
+    return kwargs
+
+
 def _parallel_map(
     items: list,
     worker,
@@ -436,9 +467,10 @@ def _parallel_map(
 ) -> list:
     """Run ``worker(i, item)`` over *items* concurrently; preserve input order.
 
-    Quiet mode drives a tqdm progress bar via ``as_completed``; verbose mode
-    lets workers stay silent to avoid interleaved output.  Falls back to serial
-    execution when *concurrency* <= 1.
+    Parallel mode drives a tqdm progress bar via ``as_completed`` in quiet mode.
+    Serial mode still shows a tqdm bar when available because Answer / Evaluate
+    do not emit per-item logs, so otherwise the process looks frozen for the
+    full duration of a long LLM request.
 
     Worker exceptions are caught per-item: the exception object is stored in
     ``results[i]`` and re-raised by callers as needed.  This prevents one bad
@@ -458,7 +490,16 @@ def _parallel_map(
     results: list = [None] * len(items)
 
     if concurrency <= 1:
-        for i, item in enumerate(items):
+        serial_iter = enumerate(items)
+        if _tqdm is not None:
+            serial_iter = _tqdm(
+                serial_iter,
+                total=total,
+                desc=desc,
+                unit="item",
+                dynamic_ncols=True,
+            )
+        for i, item in serial_iter:
             results[i] = worker(i, item)
         return results
 
@@ -909,6 +950,8 @@ def _answer_one(
     llm_client: LLMClientPool,
     llm_model: str,
     llm_timeout_seconds: int,
+    llm_max_tokens: int | None,
+    ollama_repeat_penalty: float | None,
 ) -> dict:
     """Generate an answer for a single search result; safe to run in a thread.
 
@@ -937,10 +980,15 @@ def _answer_one(
         attempts_used = attempt + 1
         try:
             r = llm_client.chat.completions.create(
-                model=llm_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temp,
-                timeout=llm_timeout_seconds,
+                **_build_chat_completion_kwargs(
+                    model=llm_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temp,
+                    timeout=llm_timeout_seconds,
+                    max_tokens=llm_max_tokens,
+                    base_url=llm_client.base_url,
+                    ollama_repeat_penalty=ollama_repeat_penalty,
+                )
             )
             raw_answer = r.choices[0].message.content or ""
         except Exception as e:
@@ -971,6 +1019,8 @@ def run_answer_phase(
     llm_client: LLMClientPool,
     llm_model: str,
     llm_timeout_seconds: int,
+    llm_max_tokens: int | None = None,
+    ollama_repeat_penalty: float | None = None,
     quiet: bool = False,
     concurrency: int = 8,
 ) -> list[dict]:
@@ -986,6 +1036,8 @@ def run_answer_phase(
             llm_client=llm_client,
             llm_model=llm_model,
             llm_timeout_seconds=llm_timeout_seconds,
+            llm_max_tokens=llm_max_tokens,
+            ollama_repeat_penalty=ollama_repeat_penalty,
         )
 
     raw = _parallel_map(
@@ -1037,6 +1089,8 @@ def _judge_single(
     golden_answer: str,
     generated_answer: str,
     llm_timeout_seconds: int,
+    llm_max_tokens: int | None,
+    ollama_repeat_penalty: float | None,
 ) -> bool:
     """Judge a single answer. Returns True if CORRECT.
 
@@ -1050,13 +1104,18 @@ def _judge_single(
     )
     try:
         r = llm_client.chat.completions.create(
-            model=llm_model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0,
-            timeout=llm_timeout_seconds,
+            **_build_chat_completion_kwargs(
+                model=llm_model,
+                messages=[
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0,
+                timeout=llm_timeout_seconds,
+                max_tokens=llm_max_tokens,
+                base_url=llm_client.base_url,
+                ollama_repeat_penalty=ollama_repeat_penalty,
+            )
         )
         content = r.choices[0].message.content or ""
         json_str = _extract_json(content)
@@ -1077,6 +1136,8 @@ def _evaluate_one(
     llm_model: str,
     judge_runs: int,
     llm_timeout_seconds: int,
+    llm_max_tokens: int | None,
+    ollama_repeat_penalty: float | None,
 ) -> dict:
     """Evaluate a single answer result with majority-vote judging.
 
@@ -1096,6 +1157,8 @@ def _evaluate_one(
                 ar["golden_answer"],
                 ar["generated_answer"],
                 llm_timeout_seconds,
+                llm_max_tokens,
+                ollama_repeat_penalty,
             )
         )
 
@@ -1109,6 +1172,8 @@ def run_evaluate_phase(
     llm_model: str,
     judge_runs: int = 1,
     llm_timeout_seconds: int = 900,
+    llm_max_tokens: int | None = None,
+    ollama_repeat_penalty: float | None = None,
     quiet: bool = False,
     concurrency: int = 8,
     qa_log: bool = False,
@@ -1124,6 +1189,8 @@ def run_evaluate_phase(
             llm_model=llm_model,
             judge_runs=judge_runs,
             llm_timeout_seconds=llm_timeout_seconds,
+            llm_max_tokens=llm_max_tokens,
+            ollama_repeat_penalty=ollama_repeat_penalty,
         )
 
     raw = _parallel_map(
@@ -1614,12 +1681,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="API key for Judge phase (env: JUDGE_API_KEY, falls back to LLM_API_KEY)",
     )
+    p.add_argument(
+        "--answer-max-tokens",
+        type=int,
+        default=None,
+        help="Max completion tokens for Answer phase (default: unlimited)",
+    )
+    p.add_argument(
+        "--judge-max-tokens",
+        type=int,
+        default=None,
+        help="Max completion tokens for Judge phase (default: unlimited)",
+    )
+    p.add_argument(
+        "--ollama-repeat-penalty",
+        type=float,
+        default=None,
+        help="Ollama-only repeat_penalty sent via extra_body options on Answer/Judge requests",
+    )
 
     args = p.parse_args()
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     bad = [m for m in methods if m not in _SUPPORTED_METHODS]
     if bad:
         p.error(f"unsupported method(s): {bad}; supported: {_SUPPORTED_METHODS}")
+    if args.answer_max_tokens is not None and args.answer_max_tokens <= 0:
+        p.error("--answer-max-tokens must be > 0")
+    if args.judge_max_tokens is not None and args.judge_max_tokens <= 0:
+        p.error("--judge-max-tokens must be > 0")
+    if args.ollama_repeat_penalty is not None and args.ollama_repeat_penalty <= 0:
+        p.error("--ollama-repeat-penalty must be > 0")
     args._methods = methods
     return args
 
@@ -1717,6 +1808,12 @@ def main():
         f" ({judge_client.key_count} keys)"
     )
     print(f"  LLM timeout: {args.llm_timeout}s")
+    print(
+        "  Answer/Judge caps: "
+        f"answer_max_tokens={args.answer_max_tokens or 'unlimited'}, "
+        f"judge_max_tokens={args.judge_max_tokens or 'unlimited'}, "
+        f"ollama_repeat_penalty={args.ollama_repeat_penalty or 'off'}"
+    )
 
     # 1. Load data (preserve LoCoMo session boundaries)
     print_section("Loading Data")
@@ -1797,6 +1894,8 @@ def main():
             answer_client,
             answer_model,
             args.llm_timeout,
+            llm_max_tokens=args.answer_max_tokens,
+            ollama_repeat_penalty=args.ollama_repeat_penalty,
             quiet=args.quiet,
             concurrency=args.concurrency,
         )
@@ -1810,6 +1909,8 @@ def main():
             judge_model,
             args.judge_runs,
             llm_timeout_seconds=args.llm_timeout,
+            llm_max_tokens=args.judge_max_tokens,
+            ollama_repeat_penalty=args.ollama_repeat_penalty,
             quiet=args.quiet,
             concurrency=args.concurrency,
             qa_log=args.qa_log,
