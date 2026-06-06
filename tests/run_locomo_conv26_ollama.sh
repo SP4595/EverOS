@@ -58,7 +58,7 @@ embedding_api_key_default="$(dotenv_value 'EVEROS_EMBEDDING__API_KEY' || true)"
 
 # LoCoMo runner uses its own benchmark model default instead of inheriting the
 # general-purpose app model from .env.
-LLM_MODEL="${LLM_MODEL:-qwen3:30b-instruct}"
+LLM_MODEL="${LLM_MODEL:-qwen3.6:35b}"
 LLM_BASE_URL="${LLM_BASE_URL:-${llm_base_url_default:-http://127.0.0.1:11434/v1}}"
 LLM_API_KEY="${LLM_API_KEY:-${llm_api_key_default:-ollama}}"
 LLM_TEMPERATURE="${LLM_TEMPERATURE:-${llm_temperature_default:-0.6}}"
